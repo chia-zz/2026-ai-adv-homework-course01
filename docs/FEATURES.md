@@ -8,6 +8,7 @@
 | 商品瀏覽（Products） | ✅ 完成 |
 | 購物車（Cart） | ✅ 完成 |
 | 訂單（Orders） | ✅ 完成 |
+| 綠界 ECPay 金流（ECPay） | ✅ 完成 |
 | 後台商品管理（Admin Products） | ✅ 完成 |
 | 後台訂單管理（Admin Orders） | ✅ 完成 |
 | 前台 SSR 頁面 | ✅ 完成 |
@@ -207,7 +208,7 @@
 | POST | `/api/orders` | 從購物車建立訂單 |
 | GET | `/api/orders` | 取得自己的訂單列表 |
 | GET | `/api/orders/:id` | 取得訂單詳情 |
-| PATCH | `/api/orders/:id/pay` | 模擬付款（更新狀態） |
+| PATCH | `/api/orders/:id/pay` | 直接更新付款狀態（內部用，正式付款走 `/api/ecpay/checkout`） |
 
 ### `POST /api/orders` — 建立訂單
 
@@ -249,7 +250,7 @@
 
 **錯誤情境**：404（不存在或不屬於當前用戶，統一訊息避免資訊洩漏）
 
-### `PATCH /api/orders/:id/pay` — 模擬付款
+### `PATCH /api/orders/:id/pay` — 直接更新付款狀態（內部）
 
 **必填欄位**：`action`（字串，`"success"` 或 `"fail"`）
 
@@ -334,7 +335,114 @@
 
 ---
 
-## 7. 前台 SSR 頁面
+## 7. 綠界 ECPay 金流（ECPay）
+
+路由前綴：`/api/ecpay`，檔案：`src/routes/ecpayRoutes.js`
+
+### 設計背景
+
+本專案運行於本地端，無法接收綠界的 **Server Notify**（`ReturnURL` 為 server-to-server POST）。付款結果改為雙軌確認：
+1. **主軌**：使用 `OrderResultURL`——付款後由使用者瀏覽器 POST 回本地 server，本地端可正常接收
+2. **備援**：`POST /api/ecpay/query` 主動呼叫綠界 Query API
+
+### 端點總覽
+
+| 方法 | 路徑 | 認證 | 說明 |
+|------|------|------|------|
+| POST | `/api/ecpay/checkout` | JWT | 產生付款表單參數 |
+| POST | `/api/ecpay/result` | 無 | OrderResultURL：接收付款結果、更新訂單、redirect |
+| POST | `/api/ecpay/return` | 無 | ReturnURL dummy（本地收不到，回 `1\|OK`） |
+| POST | `/api/ecpay/query` | JWT | 主動查詢綠界付款狀態（備援） |
+
+### `POST /api/ecpay/checkout` — 產生付款表單
+
+**必填欄位**：`orderId`（字串）
+
+**業務邏輯**：
+1. 驗證訂單存在且屬於當前用戶
+2. 確認訂單狀態為 `pending`，已付款/失敗的訂單不可重新付款
+3. 組合 ECPay AIO 參數：
+   - `MerchantTradeNo`：`order_no` 去除連字號後取前 20 碼（例：`ORD20260416AB12C`）
+   - `MerchantTradeDate`：當下時間，格式 `yyyy/MM/dd HH:mm:ss`
+   - `ItemName`：各品項「商品名稱 x數量」以 `#` 串接
+   - `TotalAmount`：訂單金額（整數，單位：元）
+   - `ReturnURL`：`{BASE_URL}/api/ecpay/return`（Server Notify，本地收不到）
+   - `OrderResultURL`：`{BASE_URL}/api/ecpay/result`（**瀏覽器 POST，本地可收到**）
+   - `ClientBackURL`：`{BASE_URL}/orders/:id`（取消付款返回）
+   - `ChoosePayment`：`Credit`（信用卡）
+4. 計算 `CheckMacValue`（SHA256，符合 PHP urlencode 規則）
+5. 回傳 `{ action: "https://payment-stage.ecpay.com.tw/...", fields: { ... } }`
+
+**前端行為**：收到 `action` 與 `fields` 後，動態建立隱藏 `<form>`，自動 submit 到綠界，頁面跳轉至綠界付款頁。
+
+**回應**：
+```json
+{
+  "data": {
+    "action": "https://payment-stage.ecpay.com.tw/Cashier/AioCheckOut/V5",
+    "fields": { "MerchantID": "...", "CheckMacValue": "...", ... }
+  },
+  "error": null,
+  "message": "成功"
+}
+```
+
+**錯誤情境**：
+- 400 `VALIDATION_ERROR`：orderId 缺失
+- 400 `INVALID_STATUS`：訂單狀態不是 pending
+- 404 `NOT_FOUND`：訂單不存在或不屬於當前用戶
+
+### `POST /api/ecpay/result` — 接收付款結果（OrderResultURL）
+
+**觸發方式**：綠界付款完成後，透過使用者瀏覽器 form POST 至此 endpoint（本地端可接收）。
+
+**業務邏輯**：
+1. 從 `req.body` 取得 `MerchantTradeNo`、`RtnCode`、`CheckMacValue`（由綠界傳入）
+2. 重新計算 CheckMacValue 驗證完整性，不符則拒絕（400）
+3. 以 `REPLACE(order_no, '-', '') = MerchantTradeNo` 找回訂單
+4. 若訂單狀態為 `pending`：`RtnCode === '1'` → `paid`；其餘 → `failed`
+5. Redirect 至 `/orders/:id?payment=success` 或 `?payment=failed`
+
+> 此 endpoint 不回 JSON，而是直接 `res.redirect()`，因為它是瀏覽器的表單目標頁。
+
+### `POST /api/ecpay/query` — 主動查詢（備援）
+
+**必填欄位**：`orderId`
+
+**業務邏輯**：
+1. 組合 Query 參數（`MerchantID`, `MerchantTradeNo`, `TimeStamp`），計算 CheckMacValue
+2. 以 Node.js 內建 `https` 模組 POST 至綠界 `QueryTradeInfo/V5`
+3. 解析回應（URL-encoded 格式），取出 `RtnCode` 與 `RtnMsg`
+4. **只有 `RtnCode === '1'` 時才更新訂單為 `paid`**；其他狀態（例如訂單不存在、處理中）維持 `pending`，讓使用者可再試
+5. 回傳更新後的訂單資料與綠界查詢結果
+
+**常見 RtnCode**：
+| RtnCode | 意義 |
+|---------|------|
+| `1` | 付款成功 |
+| `10200047` | 訂單不存在（交易尚未建立，通常是用戶未完成付款） |
+| `10200095` | 訂單處理中 |
+
+### CheckMacValue 計算規則
+
+```
+1. 移除 CheckMacValue 本身，對其他參數按 key 字母順序（case-insensitive）排序
+2. 組合字串：HashKey=xxx&Key1=Val1&Key2=Val2&HashIV=xxx
+3. encodeURIComponent 後轉小寫，並還原 ! ( ) * - . _ 為字面值，空格轉 +
+4. SHA256 雜湊 → 轉大寫
+```
+
+### 測試付款資訊（staging 環境）
+
+| 欄位 | 值 |
+|------|-----|
+| 信用卡號 | `4311-9522-2222-2222` |
+| 有效期限 | `01/26`（或任一未來日期） |
+| CVV | `222` |
+
+---
+
+## 8. 前台 SSR 頁面
 
 路由前綴：`/`，檔案：`src/routes/pageRoutes.js`，**無認證**（前端 JS 自行讀取 localStorage 的 token 處理登入狀態）。
 

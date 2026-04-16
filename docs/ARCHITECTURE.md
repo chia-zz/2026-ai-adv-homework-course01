@@ -27,6 +27,7 @@
 │       ├── orderRoutes.js     # 訂單 CRUD + 模擬付款（JWT 必要）
 │       ├── adminProductRoutes.js # 後台商品 CRUD（admin JWT）
 │       ├── adminOrderRoutes.js   # 後台訂單列表 + 詳情（admin JWT）
+│       ├── ecpayRoutes.js     # 綠界金流：產生表單、接收付款結果、Query API
 │       └── pageRoutes.js      # SSR 頁面路由（EJS 渲染）
 │
 ├── views/
@@ -98,6 +99,7 @@ node server.js
 | `/api/products` | `productRoutes.js` | 無 | 公開商品列表與詳情 |
 | `/api/cart` | `cartRoutes.js` | JWT 或 X-Session-Id（雙模式） | 購物車 CRUD |
 | `/api/orders` | `orderRoutes.js` | JWT 必要 | 建立訂單、訂單列表、詳情、模擬付款 |
+| `/api/ecpay` | `ecpayRoutes.js` | JWT（checkout/query）/ 無（result/return） | 綠界金流：產生表單、接收付款結果、Query 備援 |
 | `/api/admin/products` | `adminProductRoutes.js` | JWT + admin role | 後台商品管理 CRUD |
 | `/api/admin/orders` | `adminOrderRoutes.js` | JWT + admin role | 後台訂單查詢 |
 | `/` | `pageRoutes.js` | 無（SSR 頁面，前端 JS 自行驗證） | EJS 頁面渲染 |

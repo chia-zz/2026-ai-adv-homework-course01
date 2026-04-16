@@ -4,6 +4,24 @@
 
 ---
 
+## [Unreleased]
+
+### Added
+- **綠界 ECPay 金流串接**（`src/routes/ecpayRoutes.js`）
+  - `POST /api/ecpay/checkout`：產生 AIO 付款表單參數（含 SHA256 CheckMacValue），前端動態建立 `<form>` 並 submit 到綠界
+  - `POST /api/ecpay/result`：OrderResultURL endpoint，綠界付款後由使用者瀏覽器 POST 回來（本地端可收到）。驗證 CheckMacValue 後更新訂單狀態並 redirect 至訂單詳情頁
+  - `POST /api/ecpay/return`：ReturnURL dummy endpoint（本地端收不到，但綠界 API 必填），回傳 `1|OK`
+  - `POST /api/ecpay/query`：主動呼叫綠界 Query API 查詢付款狀態（備援，OrderResultURL 未觸達時使用）
+
+### Changed
+- **訂單詳情頁付款流程**：原先的模擬「付款成功 / 付款失敗」按鈕，改為「前往付款（綠界）」+ 「查詢付款結果」按鈕，串接真實金流
+- **Header 購物車 badge**：修正顯示數字為實際購買總數量（Σ item.quantity），而非品項種類數（items.length）
+- **商品詳情頁加入購物車**：badge 增量改為使用者選取的數量，而非固定 +1
+- **購物車頁數量調整**：修改數量或刪除品項時即時同步 header badge
+- **Header「商品列表」連結**：由 `/` 改為 `/#products`，點擊直接捲動至首頁商品區塊
+
+---
+
 ## [1.0.0] — 2026-04-16
 
 ### 初始版本
